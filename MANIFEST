@@ -1,14 +1,4 @@
 CHANGES
-dist/inc/Module/Install.pm
-dist/inc/Module/Install/Base.pm
-dist/inc/Module/Install/Can.pm
-dist/inc/Module/Install/Fetch.pm
-dist/inc/Module/Install/Makefile.pm
-dist/inc/Module/Install/Metadata.pm
-dist/inc/Module/Install/Win32.pm
-dist/inc/Module/Install/WriteAll.pm
-dist/MANIFEST
-dist/META.yml
 inc/Module/AutoInstall.pm
 inc/Module/Install.pm
 inc/Module/Install/AutoInstall.pm
