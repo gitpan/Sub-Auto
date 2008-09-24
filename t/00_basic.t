@@ -2,26 +2,26 @@
 use strict; use warnings;
 use Data::Dumper;
 
-use Test::More tests => 11;
+use Test::More tests => 13;
 
 BEGIN {
     use_ok ('Sub::Auto');
 }
 
-autosub (^take_(.*)) {
-    my($what, @args) = @_;
+autosub /^take_(.*)/ {
+    my ($what, @args) = @_;
     return "Took a $what";
 };
-autosub (^get_([^_]+)_(.*)) {
-    my($adj, $noun, @args) = @_;
+autosub /^get_([^_]+)_(.*)/ {
+    my ($adj, $noun, @args) = @_;
     return "Got a $adj $noun";
 };
-autosub wibble (^do_the_.*$) {
+autosub wibble /^do_the_.*$/ {
     my ($what, @args) = @_;
     return join "," => $what, @args;
 };
 
-autosub (^list$) {
+autosub /^list$/ {
     my (undef, $count) = @_;
     return wantarray ?
         ('x') x $count
@@ -46,4 +46,6 @@ is ($list, 3, 'OK in scalar context');
 my @list = list(3);
 is_deeply (\@list, ['x','x','x'],   'OK in list context');
 
-
+eval 'autosub /^rarr/ { "RARR" }';
+is (rarr_test(), 'RARR', 'Eval works');
+is (take_foo(), 'Took a foo', 'Previously defined sub works after eval');

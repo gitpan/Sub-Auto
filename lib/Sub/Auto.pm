@@ -1,6 +1,6 @@
 package Sub::Auto;
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 =head1 NAME
 
@@ -10,17 +10,17 @@ Sub::Auto - declare individual handlers for AUTLOADed subs, respecting can and i
 
  use Sub::Auto;
 
- autosub (^get_(\w+)$) {
+ autosub /^get_(\w+)$/ {
     my ($what, @pars) = @_;
     print "Getting $what...\n";
- };
+ }
 
- autosub (^set_(\w+)_(\w+)$) {
+ autosub /^set_(\w+)_(\w+)$/ {
     my ($adjective, $noun, @pars) = @_;
     print "Setting the $adjective $noun\n";
- };
+ }
 
- autosub handle_foo_events (foo$) {
+ autosub handle_foo_events /foo$/ {
     my ($subname, @pars) = @_;
     print "Called $subname to do something to a foo\n";
  }
@@ -61,17 +61,15 @@ Ensure that unhandled methods get dealt with by the next class in the inheritanc
 
 =head2 C<autosub>
 
- autosub [name] (regex) { ... };
-
-The declaration must end with a semicolon: this is a current limitation of L<Devel::Declare>.
+ autosub [name] /regex/ { ... }
 
 If the regex contains capturing parentheses, then each of those items will be prepended
 to the sub's argument list.  For example:
 
- autosub ((\w+)_(\w+)) {
+ autosub /(\w+)_(\w+)/ {
     my ($verb, $noun, @params) = @_;
     print "$verb'ing $noun - " . join ','=>@params;
- };
+ }
 
  jump_up('one', 'two'); # prints "jump'ing up - one,two"
 
@@ -82,10 +80,10 @@ The name of the sub is optional.  It registers a normal subroutine or method wit
 that name in the current package.  Nothing will be automatically prepended to a call
 to this method!
 
- autosub add ((\w+)_(\w+)) {
+ autosub foo /(\w+)_(\w+)/ {
     my ($verb, $noun, $one,$two) = @_;
     print $one + $two;
- };
+ }
 
  foo (undef,undef, 1, 2);
 
@@ -111,39 +109,37 @@ This module is released under the same terms as Perl itself.
 use strict; use warnings;
 
 use Class::AutoloadCAN;
-use Devel::Declare;
+use Devel::Declare 0.002;
+use Sub::Name;
+use Scope::Guard;
+use vars qw($AUTOLOAD);
 
 sub import {
-    my ($package)  = caller();
+    my $class = shift;
+    my $caller = caller;
+
+    my $parser = mk_parser($caller);
+    Devel::Declare->setup_for( 
+        $caller => { autosub => { const => $parser }} );
 
     no strict 'refs';
-
-    my @CANS;
-    Devel::Declare->install_declarator(
-        $package, 'autosub', DECLARE_PACKAGE | DECLARE_PROTO,
-        sub { '' }, # we're not using this hook to install additional source
-        sub {
-            my ($name, $re, $sub) = @_;
-              # add sub to the list of 
-            push @CANS, [qr/$re/, $sub];
-              # optionally install the sub to caller
-            *{ "${package}::$name" } = $sub if $name;
-              # in case someone is actually using the retval of autosub
-            return $sub;
-        }
-    );
-    *{ "${package}::CAN" } = mk_can(\@CANS);
+    *{$caller.'::autosub'} = sub (&) {};
 
     # trick via mst.   See also export_to_level and Sub::Exporter
+    *{ "${caller}::CAN" } = mk_can($caller);
     goto &Class::AutoloadCAN::import;
 }
 
 sub mk_can {
-    my $CANS = shift;
+    my $package = shift;
+
 
     return sub {
         my ($class, $method, $self, @arguments) = @_;
-        for my $can (@$CANS) {
+        # YUCK!
+        no strict 'refs';
+        no warnings 'once';
+        for my $can (@{"${package}::CANS"}) {
             my ($re, $sub) = @$can;
             if (my @result = $method =~ /$re/) {
                 @result = $method unless defined $1; # or $& ?
@@ -154,6 +150,119 @@ sub mk_can {
         }
         return;
         };
+}
+
+# Following boilerplate is stolen from Devel::Declare's t/method-no-semi.t
+# Note that, as with Sub::Curried and Method::Signatures, this boilerplate
+# may well be made into the "official" API shortly, at which point we'll
+# refactor and clean up!
+
+{
+    our ($Declarator, $Offset);
+
+    sub skip_declarator;
+    sub strip_name;
+    sub strip_proto;
+
+    sub mk_parser {
+      my $package = shift;
+      return sub {
+        local ($Declarator, $Offset) = @_;
+        skip_declarator;
+        my $name = strip_name;
+        my $re = strip_proto;
+
+        if (defined $name) {
+            $name = join('::', Devel::Declare::get_curstash_name(), $name)
+              unless ($name =~ /::/);
+        }
+
+        # we do scope trick even if no name (as the proto is a kind of name)
+        my $inject = scope_injector_call();
+        inject_if_block($inject);
+
+        no strict 'refs';
+        my $installer = sub (&) {
+            my $f = shift;
+            # YUCK!
+            push @{"${package}::CANS"}, [qr/$re/, $f];
+            # if we have a name, then install
+            if ($name) {
+                no strict 'refs';
+                *{$name} = subname $name => $f;
+            }
+            return $f;
+            };
+        shadow($installer);
+      };
+    }
+
+    sub skip_declarator {
+        $Offset += Devel::Declare::toke_move_past_token($Offset);
+    }
+
+    sub skipspace {
+        $Offset += Devel::Declare::toke_skipspace($Offset);
+    }
+
+    sub strip_name {
+        skipspace;
+        if (my $len = Devel::Declare::toke_scan_word($Offset, 1)) {
+            my $linestr = Devel::Declare::get_linestr();
+            my $name = substr($linestr, $Offset, $len);
+            substr($linestr, $Offset, $len) = '';
+            Devel::Declare::set_linestr($linestr);
+            return $name;
+        }
+        return;
+    }
+
+    sub strip_proto {
+        skipspace;
+    
+        my $linestr = Devel::Declare::get_linestr();
+        if (substr($linestr, $Offset, 1) =~/^[[:punct:]]$/ ) {
+            my $length = Devel::Declare::toke_scan_str($Offset);
+            my $proto = Devel::Declare::get_lex_stuff();
+            Devel::Declare::clear_lex_stuff();
+            $linestr = Devel::Declare::get_linestr();
+            substr($linestr, $Offset, $length) = '';
+            Devel::Declare::set_linestr($linestr);
+            return $proto;
+        }
+        return;
+    }
+
+    sub shadow {
+        my $pack = Devel::Declare::get_curstash_name;
+        Devel::Declare::shadow_sub("${pack}::${Declarator}", $_[0]);
+    }
+    
+    sub inject_if_block {
+        my $inject = shift;
+        skipspace;
+        my $linestr = Devel::Declare::get_linestr;
+        if (substr($linestr, $Offset, 1) eq '{') {
+            substr($linestr, $Offset+1, 0) = $inject;
+            Devel::Declare::set_linestr($linestr);
+        }
+    }
+
+    # Set up the parser scoping hacks that allow us to omit the final
+    # semicolon
+    sub scope_injector_call {
+        my $pkg = __PACKAGE__;
+        return " BEGIN { ${pkg}::inject_scope }; ";
+    }
+    sub inject_scope {
+        $^H |= 0x120000;
+        $^H{DD_METHODHANDLERS} = Scope::Guard->new(sub {
+            my $linestr = Devel::Declare::get_linestr;
+            my $offset = Devel::Declare::get_linestr_offset;
+            substr($linestr, $offset, 0) = ';';
+            Devel::Declare::set_linestr($linestr);
+        });
+    }
 }
     
 1;
